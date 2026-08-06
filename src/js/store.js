@@ -16,8 +16,8 @@
   // state as it was BEFORE the change, so Ctrl+Z can restore it. `lastSnapshot`
   // always holds a serialized copy of the current committed state; on the next
   // real change we push it onto the undo stack. View-only changes (switching
-  // area, navigating months, expand/collapse) pass { noHistory:true } so they
-  // never clutter the undo timeline — undo targets your data, not your view.
+  // area, selection) pass { noHistory:true } so they never clutter the undo
+  // timeline — undo targets your data, not your view.
   var undoStack = [];
   var redoStack = [];
   var lastSnapshot = null;
@@ -80,107 +80,84 @@
     };
   }
 
-  // Built-in goal templates, rebuilt fresh from code on every load so improvements
-  // to the defaults always propagate (the file only persists CUSTOM templates).
-  function builtinTemplates() {
-    return (P.model.BUILTIN_TEMPLATES || []).map(P.model.normalizeTemplate).filter(Boolean);
-  }
-
   function defaultState() {
     return {
-      version: 1,
+      version: 2,
+      habits: [],       // [{ id, title, notes, daysOfWeek, startTime, durationMin, completedDates }]
       notesItems: [],   // [{ id, title, body, updatedAt }]
-      goals: [],
-      templates: builtinTemplates(), // [{ id, name, description, builtin, root }]
       ui: {
-        area: 'calendar', // which sidebar section is shown: calendar | goals | notes
-        calendarView: 'month', // month is the only calendar view
-        anchorDate: P.util.ymd(new Date()),
-        weekStartsOn: 0,
+        area: 'habits', // which sidebar section is shown: habits | notes
         selectedNoteId: null,
-        backlogCollapsed: true,
         notesListCollapsed: false
       }
     };
   }
 
   // Defensive normalisation so an old/partial/corrupt file can't crash the UI.
+  // Also migrates v1 planner files: the old goal forest's recurring "budget"
+  // leaves are exactly habit-shaped (days of week + time + duration + per-day
+  // completions), so they carry over as habits. One-off scheduled tasks were
+  // planner material and are dropped.
   function migrate(data) {
     var s = defaultState();
     if (!data || typeof data !== 'object' || data.__loadError) {
       if (data && data.__loadError) lastError = data.message || 'unknown error';
       return s;
     }
+
+    if (Array.isArray(data.habits)) {
+      s.habits = data.habits.map(P.model.normalizeHabit).filter(Boolean);
+    } else if (Array.isArray(data.goals)) {
+      s.habits = habitsFromGoalForest(data.goals);
+    }
+
     if (Array.isArray(data.notesItems)) s.notesItems = data.notesItems.map(normalizeNoteItem).filter(Boolean);
-    // Migrate the old single-journal string into one note so nothing is lost.
+    // Migrate the ancient single-journal string into one note so nothing is lost.
     if (!s.notesItems.length && typeof data.journal === 'string' && data.journal.trim()) {
       s.notesItems.push({
         id: P.util.uid('note'), title: 'Journal',
         body: data.journal, updatedAt: data.journalUpdatedAt || null
       });
     }
-    if (Array.isArray(data.goals)) s.goals = data.goals.map(normalizeNode).filter(Boolean);
-    // Templates: built-ins are always taken from code (already seeded in s above);
-    // any CUSTOM templates saved in the file are normalised and appended.
-    if (Array.isArray(data.templates)) {
-      data.templates.forEach(function (t) {
-        if (!t || t.builtin) return;
-        var nt = P.model.normalizeTemplate(t);
-        if (nt) { nt.builtin = false; s.templates.push(nt); }
-      });
-    }
+
     if (data.ui && typeof data.ui === 'object') {
-      if (data.ui.area) s.ui.area = data.ui.area;
-      if (data.ui.anchorDate) s.ui.anchorDate = data.ui.anchorDate;
-      if (typeof data.ui.weekStartsOn === 'number') s.ui.weekStartsOn = data.ui.weekStartsOn;
+      s.ui.area = data.ui.area === 'notes' ? 'notes' : 'habits';
       if (data.ui.selectedNoteId) s.ui.selectedNoteId = data.ui.selectedNoteId;
-      if (typeof data.ui.backlogCollapsed === 'boolean') s.ui.backlogCollapsed = data.ui.backlogCollapsed;
       if (typeof data.ui.notesListCollapsed === 'boolean') s.ui.notesListCollapsed = data.ui.notesListCollapsed;
-      // calendarView is intentionally not read back — month is the only view now
     }
     return s;
   }
 
-  function normalizeNode(n) {
-    if (!n || typeof n !== 'object') return null;
-    n.id = n.id || P.util.uid('n');
-    n.title = typeof n.title === 'string' ? n.title : 'Untitled';
-    n.notes = typeof n.notes === 'string' ? n.notes : '';
-    n.collapsed = !!n.collapsed;
-    n.children = Array.isArray(n.children) ? n.children.map(normalizeNode).filter(Boolean) : [];
-    if (n.children.length > 0) {
-      n.leaf = null;
-    } else {
-      n.leaf = normalizeLeaf(n.leaf);
+  // v1 → v2: walk the old goal tree and lift every recurring budget leaf out as
+  // a habit. The parent chain becomes context in the title ("Fitness · Gym") so
+  // a habit that was nested under a goal keeps its meaning.
+  function habitsFromGoalForest(forest) {
+    var out = [];
+    function rec(list, trail) {
+      if (!Array.isArray(list)) return;
+      list.forEach(function (n) {
+        if (!n || typeof n !== 'object') return;
+        var title = typeof n.title === 'string' ? n.title : 'Untitled';
+        if (Array.isArray(n.children) && n.children.length) {
+          rec(n.children, trail.concat([title]));
+          return;
+        }
+        var lf = n.leaf;
+        if (!lf || lf.kind !== 'budget') return;
+        var rec_ = lf.recurrence || {};
+        out.push(P.model.normalizeHabit({
+          id: n.id,
+          title: trail.length ? trail.join(' · ') + ' · ' + title : title,
+          notes: typeof n.notes === 'string' ? n.notes : '',
+          daysOfWeek: rec_.daysOfWeek,
+          startTime: rec_.startTime,
+          durationMin: lf.durationMin,
+          completedDates: lf.completedOccurrences
+        }));
+      });
     }
-    return n;
-  }
-
-  function normalizeLeaf(lf) {
-    if (!lf || typeof lf !== 'object') return P.model.defaultTaskLeaf();
-    if (lf.kind === 'budget') {
-      var base = P.model.defaultBudgetLeaf();
-      base.durationMin = num(lf.durationMin, base.durationMin);
-      var r = lf.recurrence || {};
-      base.recurrence.daysOfWeek = Array.isArray(r.daysOfWeek) ? r.daysOfWeek.slice() : base.recurrence.daysOfWeek;
-      base.recurrence.startTime = r.startTime || base.recurrence.startTime;
-      base.recurrence.startDate = r.startDate || null;
-      base.recurrence.endDate = r.endDate || null;
-      base.completedOccurrences = Array.isArray(lf.completedOccurrences) ? lf.completedOccurrences.slice() : [];
-      return base;
-    }
-    var t = P.model.defaultTaskLeaf();
-    t.durationMin = num(lf.durationMin, t.durationMin);
-    t.scheduledStart = typeof lf.scheduledStart === 'string' ? lf.scheduledStart : null;
-    t.done = !!lf.done;
-    t.completedAt = lf.completedAt || null;
-    t.actualMin = num(lf.actualMin, 0);
-    t.timerStart = typeof lf.timerStart === 'string' ? lf.timerStart : null;
-    return t;
-  }
-
-  function num(v, fallback) {
-    return (typeof v === 'number' && isFinite(v)) ? v : fallback;
+    rec(forest, []);
+    return out.filter(Boolean);
   }
 
   function normalizeNoteItem(n) {
@@ -226,15 +203,13 @@
   }
 
   // Call after mutating state. Options:
-  //   silent      — persist but don't re-render (journal typing, so the tree never
+  //   silent      — persist but don't re-render (note typing, so the list never
   //                 rebuilds under the cursor). A whole burst of silent edits is
   //                 coalesced into ONE undo step (the pre-burst state).
-  //   noHistory   — a view-only change (area/month/collapse/selection) that should
-  //                 re-render and persist but never appear on the undo timeline.
-  //   provisional — render + persist but stay completely invisible to history and
-  //                 leave the baseline untouched. Used for the throwaway quick-add
-  //                 placeholder: if saved it becomes one clean undo step (clean →
-  //                 task), if cancelled it rolls back to nothing with no trace.
+  //   noHistory   — a view-only change (area/selection) that should re-render
+  //                 and persist but never appear on the undo timeline.
+  //   provisional — render + persist but stay completely invisible to history
+  //                 and leave the baseline untouched (throwaway placeholders).
   function commit(opts) {
     opts = opts || {};
     scheduleSave();

@@ -1,8 +1,8 @@
-// Search the page you're on — goals (title + notes) on the Goals page, notes
+// Search the page you're on — habits (title + notes) on the Habits page, notes
 // (title + body) on the Notes page. Opened from the "Search" button in the top
-// bar (Goals/Notes only) or Ctrl+F / Ctrl+K. It opens NON-modally, so the page
-// stays put behind it; picking a result reveals it in place on the same page.
-// Read-only — it never mutates data.
+// bar or Ctrl+F / Ctrl+K. It opens NON-modally, so the page stays put behind
+// it; picking a result reveals it in place on the same page. Read-only — it
+// never mutates data.
 (function () {
   'use strict';
   var P = (window.Planner = window.Planner || {});
@@ -10,7 +10,7 @@
   var results = [];
   var active = 0;
 
-  // Which page the search currently operates over ('goals' | 'notes').
+  // Which page the search currently operates over ('habits' | 'notes').
   function area() { return P.store.getState().ui.area; }
 
   function mount() {
@@ -40,9 +40,9 @@
 
   function open() {
     if (!dlg) return;
-    if (area() !== 'goals' && area() !== 'notes') return; // nothing to search here
+    if (area() !== 'habits' && area() !== 'notes') return; // nothing to search here
     if (dlg.open) { input.focus(); input.select(); return; } // already open — keep the query
-    input.placeholder = area() === 'notes' ? 'Search notes…' : 'Search goals…';
+    input.placeholder = area() === 'notes' ? 'Search notes…' : 'Search habits…';
     dlg.show(); // non-modal: the current page stays visible/interactive behind it
     input.value = '';
     results = []; active = 0;
@@ -73,22 +73,20 @@
     render();
   }
 
-  // Only search the content of the page you're on — goals OR notes, never both —
+  // Only search the content of the page you're on — habits OR notes, never both —
   // so a result always reveals in place without switching pages.
   function compute(q) {
     var st = P.store.getState();
     var out = [];
-    if (area() === 'goals') {
-      P.model.walk(st.goals, function (n) {
-        var inTitle = n.title && n.title.toLowerCase().indexOf(q) !== -1;
-        var inNotes = n.notes && n.notes.toLowerCase().indexOf(q) !== -1;
+    if (area() === 'habits') {
+      st.habits.forEach(function (h) {
+        var inTitle = h.title && h.title.toLowerCase().indexOf(q) !== -1;
+        var inNotes = h.notes && h.notes.toLowerCase().indexOf(q) !== -1;
         if (inTitle || inNotes) {
-          var trail = P.model.path(st.goals, n.id);
-          var crumb = trail.slice(0, -1).map(function (x) { return x.title; }).join(' › ');
           out.push({
-            type: 'goal', id: n.id, title: n.title || 'Untitled',
-            sub: crumb || 'Goal',
-            snippet: (inNotes && !inTitle) ? snipHtml(n.notes, q) : ''
+            type: 'habit', id: h.id, title: h.title || 'Untitled',
+            sub: P.habits ? P.habits.daysLabel(h.daysOfWeek) : 'Habit',
+            snippet: (inNotes && !inTitle) ? snipHtml(h.notes, q) : ''
           });
         }
       });
@@ -129,7 +127,7 @@
     var q = input.value.trim();
     if (!q) {
       resultsEl.innerHTML = '<div class="sr-empty">Type to search your ' +
-        (area() === 'notes' ? 'notes' : 'goals') + '.</div>';
+        (area() === 'notes' ? 'notes' : 'habits') + '.</div>';
       return;
     }
     if (!results.length) {
@@ -138,7 +136,7 @@
     }
     resultsEl.innerHTML = results.map(function (r, i) {
       return '<div class="sr-item' + (i === active ? ' active' : '') + '" data-i="' + i + '">' +
-        '<span class="sr-kind">' + (r.type === 'note' ? 'Note' : 'Goal') + '</span>' +
+        '<span class="sr-kind">' + (r.type === 'note' ? 'Note' : 'Habit') + '</span>' +
         '<div class="sr-main">' +
         '<div class="sr-title">' + hl(r.title, q) + '</div>' +
         (r.snippet ? '<div class="sr-snip">' + r.snippet + '</div>'
@@ -158,8 +156,8 @@
     if (!r) return;
     close();
     // Results are scoped to the current page, so reveal in place — no page switch.
-    if (r.type === 'goal') {
-      if (P.goals && P.goals.reveal) P.goals.reveal(r.id);
+    if (r.type === 'habit') {
+      if (P.habits && P.habits.reveal) P.habits.reveal(r.id);
     } else {
       if (P.notes && P.notes.open) P.notes.open(r.id);
     }

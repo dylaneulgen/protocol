@@ -14,20 +14,12 @@
 <body class="app">
 
   <!-- Custom (frameless) title bar. Draggable; holds the active area's controls on
-       the left and the window buttons on the right. Replaces the native OS bar. -->
+       the left, the Today pill on the right, and the window buttons in the corner. -->
   <div class="titlebar">
     <div class="tb-context">
-      <div class="tbc" data-tbc="calendar">
-        <div class="nav">
-          <button id="nav-prev" title="Previous">‹</button>
-          <button id="nav-today">Today</button>
-          <button id="nav-next" title="Next">›</button>
-        </div>
-        <span id="cal-title" class="cal-title"></span>
-      </div>
-      <div class="tbc" data-tbc="goals">
-        <button id="btn-add-goal" class="primary">+ Add goal</button>
-        <button class="tb-search-btn" data-search-btn title="Search goals (Ctrl+F)">
+      <div class="tbc" data-tbc="habits">
+        <button id="btn-add-habit" class="primary">+ Add habit</button>
+        <button class="tb-search-btn" data-search-btn title="Search habits (Ctrl+F)">
           <svg class="search-ic" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
             <circle cx="6.7" cy="6.7" r="4.2" fill="none" stroke="currentColor" stroke-width="1.6"/>
             <line x1="9.9" y1="9.9" x2="14" y2="14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
@@ -49,6 +41,9 @@
 
     <div class="tb-drag"></div>
 
+    <!-- The tiny always-visible click target: today's checklist lives behind it. -->
+    <button id="today-pill" class="today-pill" title="What’s due today"></button>
+
     <div class="tb-controls">
       <button class="tb-btn" data-win="min" title="Minimize" aria-label="Minimize">&#xE921;</button>
       <button class="tb-btn" data-win="max" title="Maximize" aria-label="Maximize">&#xE922;</button>
@@ -60,8 +55,7 @@
     <!-- The one sidebar -->
     <nav class="sidebar">
       <div class="side-nav">
-        <button class="side-item" data-view-area="calendar">Calendar</button>
-        <button class="side-item" data-view-area="goals">Goals</button>
+        <button class="side-item" data-view-area="habits">Habits</button>
         <button class="side-item" data-view-area="notes">Notes</button>
       </div>
       <div class="stopwatch">
@@ -77,22 +71,8 @@
     <main class="main">
       <div id="error-banner" class="error-banner" hidden></div>
 
-      <section class="area area-calendar" data-area="calendar">
-        <div class="cal-split">
-          <aside class="backlog-panel">
-            <div class="panel-head">
-              <h2>Backlog <span id="backlog-count" class="count"></span></h2>
-              <button class="rail-toggle" id="btn-toggle-backlog" title="Collapse">‹</button>
-            </div>
-            <p class="backlog-hint">Unscheduled tasks. Drag one onto a day to schedule it, or click to edit. New tasks without a date appear here.</p>
-            <div id="backlog-list" class="backlog-list"></div>
-          </aside>
-          <div id="calendar-body" class="calendar-body"></div>
-        </div>
-      </section>
-
-      <section class="area area-goals" data-area="goals">
-        <div id="goal-tree" class="goal-tree"></div>
+      <section class="area area-habits" data-area="habits">
+        <div id="habit-list" class="habit-list"></div>
       </section>
 
       <section class="area area-notes" data-area="notes">
@@ -112,76 +92,54 @@
     </main>
   </div>
 
-  <!-- New goal: name it first, then it's created -->
-  <dialog id="goal-dialog">
-    <form id="goal-form">
-      <h3>New goal</h3>
-      <label class="field">Name
-        <input id="goal-name" type="text" autocomplete="off">
+  <!-- Habit editor: what, which days, what time, how long -->
+  <dialog id="habit-dialog">
+    <form id="habit-form">
+      <h3 id="habit-dialog-title">New habit</h3>
+
+      <label class="field">What
+        <input id="hb-title" type="text" autocomplete="off" placeholder="e.g. Meditate">
       </label>
-      <div class="field" id="tpl-field">
-        <span>Start from a template</span>
-        <div id="tpl-picker" class="tpl-picker"></div>
-      </div>
+
+      <fieldset class="field">
+        <legend>When</legend>
+        <div class="dow" id="hb-dow" aria-label="Days of week"></div>
+        <div class="row">
+          <label>Time (optional) <input id="hb-time" type="text" autocomplete="off" placeholder="e.g. 7:00 AM"></label>
+        </div>
+        <div id="hb-time-hint" class="hint"></div>
+      </fieldset>
+
+      <label class="field">How long (optional)
+        <input id="hb-duration" type="text" autocomplete="off" placeholder="e.g. 20m or 1h30m">
+      </label>
+      <div id="hb-duration-hint" class="hint"></div>
+
+      <label class="field">Notes (optional)
+        <textarea id="hb-notes" rows="2"></textarea>
+      </label>
+
       <menu class="dialog-actions">
-        <button type="button" id="goal-cancel" class="ghost">Cancel</button>
-        <button type="submit" class="primary">Create</button>
+        <button type="button" id="hb-cancel" class="ghost">Cancel</button>
+        <button type="submit" id="hb-save" class="primary">Save</button>
       </menu>
     </form>
   </dialog>
 
-  <!-- Leaf details editor -->
-  <dialog id="leaf-dialog">
-    <form id="leaf-form">
-      <h3 id="leaf-dialog-title">Task details</h3>
-
-      <label class="field">Title
-        <input id="lf-title" type="text" autocomplete="off">
-      </label>
-
-      <label class="field switch-row">
-        <span>Recurring</span>
-        <span class="switch"><input type="checkbox" id="lf-recurring"><span class="slider"></span></span>
-      </label>
-
-      <label class="field">Duration (optional)
-        <input id="lf-duration" type="text" autocomplete="off" placeholder="1h30m">
-      </label>
-      <div id="lf-duration-hint" class="hint"></div>
-
-      <fieldset id="lf-task-fields" class="field">
-        <legend>Schedule</legend>
-        <div class="row">
-          <label>Date (optional) <input id="lf-date" type="date"></label>
-          <label>Time (optional) <input id="lf-time" type="text" autocomplete="off"></label>
-        </div>
-      </fieldset>
-
-      <fieldset id="lf-budget-fields" class="field">
-        <legend>Recurrence</legend>
-        <div class="dow" id="lf-dow" aria-label="Days of week"></div>
-        <div class="row">
-          <label>Start time <input id="lf-rec-time" type="text" autocomplete="off" placeholder="e.g. 6:00 PM"></label>
-          <label>From (optional) <input id="lf-rec-start" type="date"></label>
-          <label>Until (optional) <input id="lf-rec-end" type="date"></label>
-        </div>
-      </fieldset>
-
-      <label class="field">Notes (optional)
-        <textarea id="lf-notes" rows="2"></textarea>
-      </label>
-
-      <menu class="dialog-actions">
-        <button type="button" id="lf-cancel" class="ghost">Cancel</button>
-        <button type="submit" id="lf-save" class="primary">Save</button>
-      </menu>
-    </form>
+  <!-- Today popup: the checklist behind the pill. Opened non-modally. -->
+  <dialog id="today-pop" class="today-pop">
+    <div class="tp-head">
+      <span class="tp-head-label">Today</span>
+      <span id="today-date" class="tp-date"></span>
+    </div>
+    <div id="today-list" class="tp-list"></div>
+    <div id="today-foot" class="tp-footline"></div>
   </dialog>
 
   <!-- Page-scoped search palette (top-bar Search button / Ctrl+F). Opened non-modally. -->
   <dialog id="search-dialog" class="search-dialog">
     <div class="search-box">
-      <input id="search-input" type="text" placeholder="Search goals and notes…" autocomplete="off" spellcheck="false">
+      <input id="search-input" type="text" placeholder="Search habits and notes…" autocomplete="off" spellcheck="false">
       <button type="button" id="search-close" class="ghost">Esc</button>
     </div>
     <div id="search-results" class="search-results"></div>
@@ -197,10 +155,8 @@
   <script src="js/store.js"></script>
   <script src="js/actions.js"></script>
   <script src="js/journal.js"></script>
-  <script src="js/picker.js"></script>
-  <script src="js/goals.js"></script>
-  <script src="js/backlog.js"></script>
-  <script src="js/calendar.js"></script>
+  <script src="js/habits.js"></script>
+  <script src="js/today.js"></script>
   <script src="js/search.js"></script>
   <script src="js/app.js"></script>
 </body>

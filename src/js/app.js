@@ -1,6 +1,6 @@
-// Bootstrap: load state, mount every panel, wire the header controls, and wire
-// the global drag bookkeeping. Loaded last (after all other modules have
-// registered themselves on window.Planner).
+// Bootstrap: load state, mount every panel, wire the header controls and global
+// shortcuts. Loaded last (after all other modules have registered themselves on
+// window.Planner).
 (function () {
   'use strict';
   var P = (window.Planner = window.Planner || {});
@@ -10,46 +10,26 @@
   async function boot() {
     await P.store.init();
 
-    // While a drag is in progress, make calendar blocks transparent to drops so
-    // the column underneath receives the drop (see .dragging-active in CSS).
-    document.addEventListener('dragstart', function () { document.body.classList.add('dragging-active'); });
-    document.addEventListener('dragend', function () {
-      document.body.classList.remove('dragging-active');
-      P.dragNodeId = null;
-    });
-    document.addEventListener('drop', function () { document.body.classList.remove('dragging-active'); });
-
     wireWindowControls();
 
     P.notes.mount();
-    P.goals.mount();
-    P.backlog.mount();
-    P.calendar.mount();
+    P.habits.mount();
+    P.today.mount();
     if (P.search) P.search.mount();
 
     P.store.subscribe(P.notes.render);
-    P.store.subscribe(P.goals.render);
-    P.store.subscribe(P.backlog.render);
-    P.store.subscribe(P.calendar.render);
+    P.store.subscribe(P.habits.render);
+    P.store.subscribe(P.today.render);
 
     wireSidebar();
     wireHeader();
     wireStopwatch();
     document.addEventListener('keydown', onGlobalKey);
-    applyArea(P.store.getState().ui.area || 'calendar');
+    applyArea(P.store.getState().ui.area || 'habits');
     applyCollapse();
     renderAll();
 
     showLoadErrorIfAny();
-
-    // Display the data file path in the status bar / folder button tooltip.
-    try {
-      var p = await P.io.dataPath();
-      var pathEl = document.getElementById('data-path');
-      if (pathEl) pathEl.textContent = 'Data: ' + p;
-      var folderBtn = document.getElementById('btn-folder');
-      if (folderBtn) folderBtn.title = 'Open ' + p;
-    } catch (e) { /* ignore */ }
 
     // Flush the last (debounced) edit to disk before the window closes.
     window.addEventListener('beforeunload', function () { P.store.flush(); });
@@ -88,9 +68,8 @@
 
   function renderAll() {
     P.notes.render();
-    P.goals.render();
-    P.backlog.render();
-    P.calendar.render();
+    P.habits.render();
+    P.today.render();
   }
 
   // ---- Global keyboard shortcuts -------------------------------------------
@@ -99,9 +78,9 @@
     if (!mod) return;
     var key = (e.key || '').toLowerCase();
 
-    // Ctrl+F / Ctrl+K — open the page search (no-op on Calendar; see search.js).
-    // Bail if any dialog is already open (don't stack over the leaf/goal editor,
-    // and don't wipe an in-progress query when search itself is the open dialog).
+    // Ctrl+F / Ctrl+K — open the page search. Bail if any dialog is already open
+    // (don't stack over the habit editor, and don't wipe an in-progress query
+    // when search itself is the open dialog).
     if (key === 'f' || key === 'k') {
       if (document.querySelector('dialog[open]')) return;
       e.preventDefault();
@@ -109,21 +88,9 @@
       return;
     }
 
-    // Copy / paste selected goals — goal tree only. Leave the native clipboard
-    // alone while editing text or with a dialog open, and only swallow the
-    // shortcut when we actually have something to copy/paste.
-    if (key === 'c' || key === 'v') {
-      if (P.store.getState().ui.area !== 'goals') return;
-      if (isTextTarget(e.target) || document.querySelector('dialog[open]')) return;
-      if (!P.goals) return;
-      if (key === 'c') { if (P.goals.copySelection && P.goals.copySelection()) e.preventDefault(); }
-      else { if (P.goals.pasteClipboard && P.goals.pasteClipboard()) e.preventDefault(); }
-      return;
-    }
-
     // Undo / redo. Skip while the user is editing a text field (so the native
     // input/textarea undo keeps working) or while a modal dialog is open (so we
-    // never rewrite the tree out from under an open editor).
+    // never rewrite the list out from under an open editor).
     if (key === 'z' || key === 'y') {
       if (isTextTarget(e.target) || document.querySelector('dialog[open]')) return;
       e.preventDefault();
@@ -201,7 +168,7 @@
     var st = P.store.getState();
     st.ui.area = area;
     applyArea(area);                      // reveal the target area BEFORE committing
-    P.store.commit({ noHistory: true });  // so a now-visible calendar re-renders
+    P.store.commit({ noHistory: true });  // so a now-visible panel re-renders
   }
 
   function applyArea(area) {
@@ -218,47 +185,22 @@
   }
 
   function wireHeader() {
-    // Collapse toggles: backlog (calendar) and the notes list
-    document.getElementById('btn-toggle-backlog').addEventListener('click', function () {
-      var ui = P.store.getState().ui;
-      ui.backlogCollapsed = !ui.backlogCollapsed;
-      applyCollapse();
-      P.store.commit({ noHistory: true });
-    });
+    // Collapse toggle: the notes list
     document.getElementById('btn-toggle-noteslist').addEventListener('click', function () {
       var ui = P.store.getState().ui;
       ui.notesListCollapsed = !ui.notesListCollapsed;
       applyCollapse();
       P.store.commit({ noHistory: true });
     });
-
-    // Month navigation
-    document.getElementById('nav-prev').addEventListener('click', function () { navigate(-1); });
-    document.getElementById('nav-next').addEventListener('click', function () { navigate(1); });
-    document.getElementById('nav-today').addEventListener('click', function () {
-      P.store.getState().ui.anchorDate = P.util.ymd(new Date());
-      P.store.commit({ noHistory: true });
-    });
   }
 
-  // Show/hide the backlog (calendar) and notes list, and reflect state on toggles.
+  // Show/hide the notes list, and reflect state on the toggle.
   function applyCollapse() {
     var ui = P.store.getState().ui;
-    var calSplit = document.querySelector('.cal-split');
     var notesSplit = document.querySelector('.notes-split');
-    if (calSplit) calSplit.classList.toggle('no-backlog', !!ui.backlogCollapsed);
     if (notesSplit) notesSplit.classList.toggle('no-list', !!ui.notesListCollapsed);
-    var bt = document.getElementById('btn-toggle-backlog');
-    if (bt) { bt.textContent = ui.backlogCollapsed ? '›' : '‹'; bt.title = ui.backlogCollapsed ? 'Show backlog' : 'Collapse'; }
     var nt = document.getElementById('btn-toggle-noteslist');
     if (nt) { nt.textContent = ui.notesListCollapsed ? '›' : '‹'; nt.title = ui.notesListCollapsed ? 'Show list' : 'Collapse'; }
-  }
-
-  function navigate(dir) {
-    var st = P.store.getState();
-    var a = P.util.parseYmd(st.ui.anchorDate);
-    st.ui.anchorDate = P.util.ymd(P.util.addMonths(a, dir));
-    P.store.commit({ noHistory: true });
   }
 
   function showLoadErrorIfAny() {
@@ -267,8 +209,7 @@
     var banner = document.getElementById('error-banner');
     if (!banner) return;
     banner.textContent = 'Could not read your saved data (' + msg +
-      '). Starting empty — your previous file and its .bak backup were left untouched. ' +
-      'Use "Data" to inspect them before making changes.';
+      '). Starting empty — your previous file and its .bak backup were left untouched.';
     banner.hidden = false;
   }
 
