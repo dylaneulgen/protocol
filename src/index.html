@@ -14,12 +14,12 @@
 <body class="app">
 
   <!-- Custom (frameless) title bar. Draggable; holds the active area's controls on
-       the left, the Today pill on the right, and the window buttons in the corner. -->
+       the left, the tiny Today box on the right, and the window buttons in the corner. -->
   <div class="titlebar">
     <div class="tb-context">
-      <div class="tbc" data-tbc="habits">
-        <button id="btn-add-habit" class="primary">+ Add habit</button>
-        <button class="tb-search-btn" data-search-btn title="Search habits (Ctrl+F)">
+      <div class="tbc" data-tbc="goals">
+        <button id="btn-add-goal" class="primary">+ Add goal</button>
+        <button class="tb-search-btn" data-search-btn title="Search goals (Ctrl+F)">
           <svg class="search-ic" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
             <circle cx="6.7" cy="6.7" r="4.2" fill="none" stroke="currentColor" stroke-width="1.6"/>
             <line x1="9.9" y1="9.9" x2="14" y2="14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
@@ -41,8 +41,8 @@
 
     <div class="tb-drag"></div>
 
-    <!-- The tiny always-visible click target: today's checklist lives behind it. -->
-    <button id="today-pill" class="today-pill" title="What’s due today"></button>
+    <!-- The tiny click target: today's checklist lives behind it. -->
+    <button id="today-box" class="today-box" title="Due today"></button>
 
     <div class="tb-controls">
       <button class="tb-btn" data-win="min" title="Minimize" aria-label="Minimize">&#xE921;</button>
@@ -55,7 +55,7 @@
     <!-- The one sidebar -->
     <nav class="sidebar">
       <div class="side-nav">
-        <button class="side-item" data-view-area="habits">Habits</button>
+        <button class="side-item" data-view-area="goals">Goals</button>
         <button class="side-item" data-view-area="notes">Notes</button>
       </div>
       <div class="stopwatch">
@@ -71,8 +71,8 @@
     <main class="main">
       <div id="error-banner" class="error-banner" hidden></div>
 
-      <section class="area area-habits" data-area="habits">
-        <div id="habit-list" class="habit-list"></div>
+      <section class="area area-goals" data-area="goals">
+        <div id="goal-tree" class="goal-tree"></div>
       </section>
 
       <section class="area area-notes" data-area="notes">
@@ -92,41 +92,55 @@
     </main>
   </div>
 
-  <!-- Habit editor: what, which days, what time, how long -->
-  <dialog id="habit-dialog">
-    <form id="habit-form">
-      <h3 id="habit-dialog-title">New habit</h3>
-
-      <label class="field">What
-        <input id="hb-title" type="text" autocomplete="off" placeholder="e.g. Meditate">
+  <!-- New goal: name it first, then it's created -->
+  <dialog id="goal-dialog">
+    <form id="goal-form">
+      <h3>New goal</h3>
+      <label class="field">Name
+        <input id="goal-name" type="text" autocomplete="off">
       </label>
-
-      <fieldset class="field">
-        <legend>When</legend>
-        <div class="dow" id="hb-dow" aria-label="Days of week"></div>
-        <div class="row">
-          <label>Time (optional) <input id="hb-time" type="text" autocomplete="off" placeholder="e.g. 7:00 AM"></label>
-        </div>
-        <div id="hb-time-hint" class="hint"></div>
-      </fieldset>
-
-      <label class="field">How long (optional)
-        <input id="hb-duration" type="text" autocomplete="off" placeholder="e.g. 20m or 1h30m">
-      </label>
-      <div id="hb-duration-hint" class="hint"></div>
-
-      <label class="field">Notes (optional)
-        <textarea id="hb-notes" rows="2"></textarea>
-      </label>
-
       <menu class="dialog-actions">
-        <button type="button" id="hb-cancel" class="ghost">Cancel</button>
-        <button type="submit" id="hb-save" class="primary">Save</button>
+        <button type="button" id="goal-cancel" class="ghost">Cancel</button>
+        <button type="submit" class="primary">Create</button>
       </menu>
     </form>
   </dialog>
 
-  <!-- Today popup: the checklist behind the pill. Opened non-modally. -->
+  <!-- Leaf details editor: which days (every day by default), time, length -->
+  <dialog id="goal-editor">
+    <form id="goal-editor-form">
+      <h3>Goal details</h3>
+
+      <label class="field">Title
+        <input id="gl-title" type="text" autocomplete="off">
+      </label>
+
+      <fieldset class="field">
+        <legend>Days</legend>
+        <div class="dow" id="gl-dow" aria-label="Days of week"></div>
+        <div class="row">
+          <label>Time (optional) <input id="gl-time" type="text" autocomplete="off" placeholder="e.g. 7:00 AM"></label>
+        </div>
+        <div id="gl-time-hint" class="hint"></div>
+      </fieldset>
+
+      <label class="field">How long (optional)
+        <input id="gl-duration" type="text" autocomplete="off" placeholder="e.g. 20m or 1h30m">
+      </label>
+      <div id="gl-duration-hint" class="hint"></div>
+
+      <label class="field">Notes (optional)
+        <textarea id="gl-notes" rows="2"></textarea>
+      </label>
+
+      <menu class="dialog-actions">
+        <button type="button" id="gl-cancel" class="ghost">Cancel</button>
+        <button type="submit" id="gl-save" class="primary">Save</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <!-- Today popup: the checklist behind the tiny box. Opened non-modally. -->
   <dialog id="today-pop" class="today-pop">
     <div class="tp-head">
       <span class="tp-head-label">Today</span>
@@ -139,7 +153,7 @@
   <!-- Page-scoped search palette (top-bar Search button / Ctrl+F). Opened non-modally. -->
   <dialog id="search-dialog" class="search-dialog">
     <div class="search-box">
-      <input id="search-input" type="text" placeholder="Search habits and notes…" autocomplete="off" spellcheck="false">
+      <input id="search-input" type="text" placeholder="Search goals and notes…" autocomplete="off" spellcheck="false">
       <button type="button" id="search-close" class="ghost">Esc</button>
     </div>
     <div id="search-results" class="search-results"></div>
@@ -155,7 +169,7 @@
   <script src="js/store.js"></script>
   <script src="js/actions.js"></script>
   <script src="js/journal.js"></script>
-  <script src="js/habits.js"></script>
+  <script src="js/goals.js"></script>
   <script src="js/today.js"></script>
   <script src="js/search.js"></script>
   <script src="js/app.js"></script>

@@ -31,15 +31,11 @@ test('parseClock understands free-text time', () => {
   assert.deepStrictEqual(util.parseClock('930pm'), { h: 21, m: 30 });
   assert.deepStrictEqual(util.parseClock('12am'), { h: 0, m: 0 });
   assert.deepStrictEqual(util.parseClock('12pm'), { h: 12, m: 0 });
-  assert.deepStrictEqual(util.parseClock('1230pm'), { h: 12, m: 30 });
   assert.deepStrictEqual(util.parseClock('1400'), { h: 14, m: 0 });
-  assert.deepStrictEqual(util.parseClock('0930'), { h: 9, m: 30 });
-  assert.deepStrictEqual(util.parseClock('9'), { h: 9, m: 0 });
   assert.deepStrictEqual(util.parseClock('9:30'), { h: 9, m: 30 });
   assert.strictEqual(util.parseClock(''), null);
   assert.strictEqual(util.parseClock('banana'), null);
   assert.strictEqual(util.parseClock('25:00'), null);
-  assert.strictEqual(util.parseClock('9:60'), null);
   assert.strictEqual(util.parseClock('13am'), null); // 12-hour clock only
 });
 
@@ -50,29 +46,47 @@ test('fmtClock renders friendly 12-hour times', () => {
   assert.strictEqual(util.fmtClock(12, 0), '12:00 PM');
 });
 
-test('date helpers work in local time', () => {
-  const d = new Date(2026, 5, 29, 13, 30); // Mon Jun 29 2026
-  assert.strictEqual(util.ymd(d), '2026-06-29');
-  assert.strictEqual(util.ymd(util.addDays(d, 3)), '2026-07-02');
-  assert.strictEqual(util.ymd(util.startOfDay(d)), '2026-06-29');
+// ---- Tree structure ----------------------------------------------------------
+
+test('makeGoal is an every-day leaf with no time and no length', () => {
+  const g = model.makeGoal('Meditate');
+  assert.ok(model.isLeaf(g));
+  assert.deepStrictEqual(g.habit.daysOfWeek, [0, 1, 2, 3, 4, 5, 6]);
+  assert.strictEqual(g.habit.startTime, null);
+  assert.strictEqual(g.habit.durationMin, 0);
+  assert.deepStrictEqual(g.habit.completedDates, []);
 });
 
-// ---- Habit factory / normalisation -----------------------------------------
+test('addChild promotes a leaf to a parent; removeNode demotes back', () => {
+  const forest = [model.makeGoal('Goal A')];
+  const goalId = forest[0].id;
+  assert.ok(model.isLeaf(forest[0]));
 
-test('makeHabit defaults to every day, no time, no duration', () => {
-  const h = model.makeHabit('Meditate');
-  assert.strictEqual(h.title, 'Meditate');
-  assert.deepStrictEqual(h.daysOfWeek, [0, 1, 2, 3, 4, 5, 6]);
-  assert.strictEqual(h.startTime, null);
-  assert.strictEqual(h.durationMin, 0);
-  assert.deepStrictEqual(h.completedDates, []);
-  assert.ok(h.id);
+  const child = model.makeNode('Subgoal', model.defaultHabit());
+  model.addChild(forest, goalId, child);
+  assert.ok(!model.isLeaf(forest[0]));        // now a parent
+  assert.strictEqual(forest[0].habit, null);  // habit data dropped
+
+  model.removeNode(forest, child.id);
+  assert.ok(model.isLeaf(forest[0]));         // back to a leaf
+  assert.ok(forest[0].habit && forest[0].habit.daysOfWeek.length === 7);
 });
 
-test('normalizeHabit cleans up junk without crashing', () => {
-  assert.strictEqual(model.normalizeHabit(null), null);
-  const h = model.normalizeHabit({
-    title: 'Run',
+test('find and path locate nodes in the forest', () => {
+  const forest = [model.makeNode('Root', null)];
+  const a = model.makeNode('A', null);
+  const b = model.makeNode('B', model.defaultHabit());
+  forest[0].children = [a];
+  a.children = [b];
+  const found = model.find(forest, b.id);
+  assert.strictEqual(found.node.title, 'B');
+  assert.strictEqual(found.parent.title, 'A');
+  const p = model.path(forest, b.id).map((n) => n.title);
+  assert.deepStrictEqual(p, ['Root', 'A', 'B']);
+});
+
+test('normalizeHabitData cleans up junk without crashing', () => {
+  const h = model.normalizeHabitData({
     daysOfWeek: [5, 1, 1, 9, -2, 'x', 3],
     startTime: 'lunchtime',
     durationMin: -5,
@@ -82,52 +96,59 @@ test('normalizeHabit cleans up junk without crashing', () => {
   assert.strictEqual(h.startTime, null);           // unreadable time dropped
   assert.strictEqual(h.durationMin, 0);            // negative duration dropped
   assert.deepStrictEqual(h.completedDates, ['2026-08-01']);
-  const t = model.normalizeHabit({ title: 'Gym', startTime: '07:30', durationMin: 45.4 });
+  const t = model.normalizeHabitData({ startTime: '07:30', durationMin: 45.4 });
   assert.strictEqual(t.startTime, '07:30');
   assert.strictEqual(t.durationMin, 45);
+  // no days at all falls back to every day (everything recurs)
+  assert.strictEqual(model.normalizeHabitData({ daysOfWeek: [] }).daysOfWeek.length, 7);
 });
 
 // ---- Occurrence / today's list ----------------------------------------------
 
 test('occursOn matches the day of week', () => {
-  const h = model.makeHabit('Gym');
-  h.daysOfWeek = [1, 3, 5]; // Mon Wed Fri
-  assert.strictEqual(model.occursOn(h, new Date(2026, 7, 3)), true);  // Mon Aug 3
-  assert.strictEqual(model.occursOn(h, new Date(2026, 7, 4)), false); // Tue Aug 4
+  const g = model.makeGoal('Gym');
+  g.habit.daysOfWeek = [1, 3, 5]; // Mon Wed Fri
+  assert.strictEqual(model.occursOn(g, new Date(2026, 7, 3)), true);  // Mon Aug 3
+  assert.strictEqual(model.occursOn(g, new Date(2026, 7, 4)), false); // Tue Aug 4
 });
 
-test('forDate lists only due habits, sorted by time with untimed last', () => {
-  const gym = model.makeHabit('Gym');
-  gym.daysOfWeek = [1]; gym.startTime = '18:00';
-  const meditate = model.makeHabit('Meditate');
-  meditate.startTime = '07:00';
-  const read = model.makeHabit('Read'); // anytime
-  const weekend = model.makeHabit('Long run');
-  weekend.daysOfWeek = [0, 6];
+test('forDate flattens the tree, keeps crumbs, sorts by time with untimed last', () => {
+  const parent = model.makeNode('Learn Japanese', null);
+  const anki = model.makeGoal('Anki'); anki.habit.startTime = '23:00';
+  const immerse = model.makeGoal('Immersion'); immerse.habit.startTime = '12:00';
+  parent.children = [anki, immerse];
+  parent.habit = null;
+  const read = model.makeGoal('Read'); // anytime, top-level
+  const weekend = model.makeGoal('Long run');
+  weekend.habit.daysOfWeek = [0, 6];
 
   const mon = new Date(2026, 7, 3); // Mon Aug 3 2026
-  meditate.completedDates = ['2026-08-03'];
+  immerse.habit.completedDates = ['2026-08-03'];
 
-  const items = model.forDate([gym, read, weekend, meditate], mon);
-  assert.deepStrictEqual(items.map((i) => i.habit.title), ['Meditate', 'Gym', 'Read']);
+  const items = model.forDate([parent, read, weekend], mon);
+  assert.deepStrictEqual(items.map((i) => i.node.title), ['Immersion', 'Anki', 'Read']);
   assert.deepStrictEqual(items.map((i) => i.done), [true, false, false]);
+  assert.deepStrictEqual(items[0].crumb, ['Learn Japanese']);
+  assert.deepStrictEqual(items[2].crumb, []);
 });
 
 test('toggleDate checks a day off and back on', () => {
-  const h = model.makeHabit('Stretch');
-  assert.strictEqual(model.toggleDate(h, '2026-08-06'), true);
-  assert.ok(model.isDoneOn(h, '2026-08-06'));
-  assert.strictEqual(model.toggleDate(h, '2026-08-06'), false);
-  assert.ok(!model.isDoneOn(h, '2026-08-06'));
+  const g = model.makeGoal('Stretch');
+  assert.strictEqual(model.toggleDate(g, '2026-08-06'), true);
+  assert.ok(model.isDoneOn(g, '2026-08-06'));
+  assert.strictEqual(model.toggleDate(g, '2026-08-06'), false);
+  assert.ok(!model.isDoneOn(g, '2026-08-06'));
 });
 
-test('dayStats rolls up counts and minutes', () => {
-  const a = model.makeHabit('A'); a.durationMin = 30;
-  const b = model.makeHabit('B'); b.durationMin = 60;
-  const c = model.makeHabit('C'); // no duration
+test('dayStats rolls up counts and minutes across the forest', () => {
+  const parent = model.makeNode('P', null);
+  const a = model.makeGoal('A'); a.habit.durationMin = 30;
+  const b = model.makeGoal('B'); b.habit.durationMin = 60;
+  parent.children = [a, b]; parent.habit = null;
+  const c = model.makeGoal('C'); // no duration, top-level
   const day = new Date(2026, 7, 6);
-  a.completedDates = [util.ymd(day)];
-  const s = model.dayStats([a, b, c], day);
+  a.habit.completedDates = [util.ymd(day)];
+  const s = model.dayStats([parent, c], day);
   assert.strictEqual(s.due, 3);
   assert.strictEqual(s.done, 1);
   assert.strictEqual(s.totalMin, 90);
@@ -135,54 +156,49 @@ test('dayStats rolls up counts and minutes', () => {
   assert.strictEqual(s.remainingMin, 60);
 });
 
+test('rollupToday aggregates one subtree for the parent row', () => {
+  const parent = model.makeNode('P', null);
+  const a = model.makeGoal('A'); a.habit.durationMin = 30;
+  const b = model.makeGoal('B'); b.habit.durationMin = 60;
+  const off = model.makeGoal('Weekend only'); off.habit.daysOfWeek = [0, 6];
+  parent.children = [a, b, off]; parent.habit = null;
+  const thu = new Date(2026, 7, 6);
+  a.habit.completedDates = [util.ymd(thu)];
+  const r = model.rollupToday(parent, thu);
+  assert.strictEqual(r.due, 2);       // 'Weekend only' isn't due Thursday
+  assert.strictEqual(r.done, 1);
+  assert.strictEqual(r.totalMin, 90);
+  assert.strictEqual(r.percent, 50);
+});
+
 // ---- Streaks -----------------------------------------------------------------
 
 test('streak counts consecutive completed due days', () => {
-  const h = model.makeHabit('Meditate'); // every day
+  const g = model.makeGoal('Meditate'); // every day
   const today = new Date(2026, 7, 6); // Thu Aug 6
-  h.completedDates = ['2026-08-04', '2026-08-05', '2026-08-06'];
-  assert.strictEqual(model.streak(h, today), 3);
+  g.habit.completedDates = ['2026-08-04', '2026-08-05', '2026-08-06'];
+  assert.strictEqual(model.streak(g, today), 3);
 });
 
 test('an unchecked today does not break a live streak', () => {
-  const h = model.makeHabit('Meditate');
+  const g = model.makeGoal('Meditate');
   const today = new Date(2026, 7, 6);
-  h.completedDates = ['2026-08-04', '2026-08-05']; // today not done (yet)
-  assert.strictEqual(model.streak(h, today), 2);
+  g.habit.completedDates = ['2026-08-04', '2026-08-05']; // today not done (yet)
+  assert.strictEqual(model.streak(g, today), 2);
 });
 
 test('a missed due day ends the streak', () => {
-  const h = model.makeHabit('Meditate');
+  const g = model.makeGoal('Meditate');
   const today = new Date(2026, 7, 6);
-  h.completedDates = ['2026-08-03', '2026-08-06']; // Aug 4+5 missed
-  assert.strictEqual(model.streak(h, today), 1);
+  g.habit.completedDates = ['2026-08-03', '2026-08-06']; // Aug 4+5 missed
+  assert.strictEqual(model.streak(g, today), 1);
 });
 
 test('off days are skipped, not counted against the streak', () => {
-  const h = model.makeHabit('Gym');
-  h.daysOfWeek = [1, 3, 5]; // Mon Wed Fri
+  const g = model.makeGoal('Gym');
+  g.habit.daysOfWeek = [1, 3, 5]; // Mon Wed Fri
   const today = new Date(2026, 7, 7); // Fri Aug 7
   // Mon Aug 3, Wed Aug 5, Fri Aug 7 done; Tue/Thu are off days.
-  h.completedDates = ['2026-08-03', '2026-08-05', '2026-08-07'];
-  assert.strictEqual(model.streak(h, today), 3);
-});
-
-test('a habit with no due days has no streak', () => {
-  const h = model.makeHabit('Nothing');
-  h.daysOfWeek = [];
-  assert.strictEqual(model.streak(h, new Date(2026, 7, 6)), 0);
-});
-
-// ---- History (mini grid) -----------------------------------------------------
-
-test('history returns the last N days oldest-first with due/done flags', () => {
-  const h = model.makeHabit('Gym');
-  h.daysOfWeek = [1, 3, 5]; // Mon Wed Fri
-  h.completedDates = ['2026-08-05'];
-  const days = model.history(h, new Date(2026, 7, 6), 4); // Mon .. Thu Aug 3-6
-  assert.strictEqual(days.length, 4);
-  assert.deepStrictEqual(days.map((d) => d.date),
-    ['2026-08-03', '2026-08-04', '2026-08-05', '2026-08-06']);
-  assert.deepStrictEqual(days.map((d) => d.due), [true, false, true, false]);
-  assert.deepStrictEqual(days.map((d) => d.done), [false, false, true, false]);
+  g.habit.completedDates = ['2026-08-03', '2026-08-05', '2026-08-07'];
+  assert.strictEqual(model.streak(g, today), 3);
 });

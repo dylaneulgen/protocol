@@ -13,19 +13,19 @@
     wireWindowControls();
 
     P.notes.mount();
-    P.habits.mount();
+    P.goals.mount();
     P.today.mount();
     if (P.search) P.search.mount();
 
     P.store.subscribe(P.notes.render);
-    P.store.subscribe(P.habits.render);
+    P.store.subscribe(P.goals.render);
     P.store.subscribe(P.today.render);
 
     wireSidebar();
     wireHeader();
     wireStopwatch();
     document.addEventListener('keydown', onGlobalKey);
-    applyArea(P.store.getState().ui.area || 'habits');
+    applyArea(P.store.getState().ui.area || 'goals');
     applyCollapse();
     renderAll();
 
@@ -68,7 +68,7 @@
 
   function renderAll() {
     P.notes.render();
-    P.habits.render();
+    P.goals.render();
     P.today.render();
   }
 
@@ -85,6 +85,18 @@
       if (document.querySelector('dialog[open]')) return;
       e.preventDefault();
       if (P.search) P.search.open();
+      return;
+    }
+
+    // Copy / paste selected goals — goal tree only. Leave the native clipboard
+    // alone while editing text or with a dialog open, and only swallow the
+    // shortcut when we actually have something to copy/paste.
+    if (key === 'c' || key === 'v') {
+      if (P.store.getState().ui.area !== 'goals') return;
+      if (isTextTarget(e.target) || document.querySelector('dialog[open]')) return;
+      if (!P.goals) return;
+      if (key === 'c') { if (P.goals.copySelection && P.goals.copySelection()) e.preventDefault(); }
+      else { if (P.goals.pasteClipboard && P.goals.pasteClipboard()) e.preventDefault(); }
       return;
     }
 

@@ -16,8 +16,8 @@
   // state as it was BEFORE the change, so Ctrl+Z can restore it. `lastSnapshot`
   // always holds a serialized copy of the current committed state; on the next
   // real change we push it onto the undo stack. View-only changes (switching
-  // area, selection) pass { noHistory:true } so they never clutter the undo
-  // timeline — undo targets your data, not your view.
+  // area, selection, expand/collapse) pass { noHistory:true } so they never
+  // clutter the undo timeline — undo targets your data, not your view.
   var undoStack = [];
   var redoStack = [];
   var lastSnapshot = null;
@@ -82,11 +82,11 @@
 
   function defaultState() {
     return {
-      version: 2,
-      habits: [],       // [{ id, title, notes, daysOfWeek, startTime, durationMin, completedDates }]
+      version: 3,
+      goals: [],        // forest of nodes; every leaf is a recurring goal (see model.js)
       notesItems: [],   // [{ id, title, body, updatedAt }]
       ui: {
-        area: 'habits', // which sidebar section is shown: habits | notes
+        area: 'goals',  // which sidebar section is shown: goals | notes
         selectedNoteId: null,
         notesListCollapsed: false
       }
@@ -94,10 +94,15 @@
   }
 
   // Defensive normalisation so an old/partial/corrupt file can't crash the UI.
-  // Also migrates v1 planner files: the old goal forest's recurring "budget"
-  // leaves are exactly habit-shaped (days of week + time + duration + per-day
-  // completions), so they carry over as habits. One-off scheduled tasks were
-  // planner material and are dropped.
+  // Three generations of files exist:
+  //   v3 (current) — goal forest whose leaves carry `habit` data.
+  //   v2 (the brief flat habit-tracker build) — a flat `habits` array whose
+  //       titles embed the old goal path ("Learn Japanese · Anki"); un-flatten
+  //       them by splitting on that separator so the nesting comes back.
+  //   v1 (the original planner) — goal forest whose leaves carry `leaf` data of
+  //       kind task/budget. The tree survives as-is; every leaf becomes a
+  //       recurring goal (budgets keep their days/time/completions; one-off
+  //       tasks become every-day goals — their schedule was planner material).
   function migrate(data) {
     var s = defaultState();
     if (!data || typeof data !== 'object' || data.__loadError) {
@@ -105,10 +110,10 @@
       return s;
     }
 
-    if (Array.isArray(data.habits)) {
-      s.habits = data.habits.map(P.model.normalizeHabit).filter(Boolean);
-    } else if (Array.isArray(data.goals)) {
-      s.habits = habitsFromGoalForest(data.goals);
+    if (Array.isArray(data.goals)) {
+      s.goals = data.goals.map(normalizeNode).filter(Boolean);
+    } else if (Array.isArray(data.habits)) {
+      s.goals = unflattenHabits(data.habits);
     }
 
     if (Array.isArray(data.notesItems)) s.notesItems = data.notesItems.map(normalizeNoteItem).filter(Boolean);
@@ -121,43 +126,86 @@
     }
 
     if (data.ui && typeof data.ui === 'object') {
-      s.ui.area = data.ui.area === 'notes' ? 'notes' : 'habits';
+      s.ui.area = data.ui.area === 'notes' ? 'notes' : 'goals';
       if (data.ui.selectedNoteId) s.ui.selectedNoteId = data.ui.selectedNoteId;
       if (typeof data.ui.notesListCollapsed === 'boolean') s.ui.notesListCollapsed = data.ui.notesListCollapsed;
     }
     return s;
   }
 
-  // v1 → v2: walk the old goal tree and lift every recurring budget leaf out as
-  // a habit. The parent chain becomes context in the title ("Fitness · Gym") so
-  // a habit that was nested under a goal keeps its meaning.
-  function habitsFromGoalForest(forest) {
-    var out = [];
-    function rec(list, trail) {
-      if (!Array.isArray(list)) return;
-      list.forEach(function (n) {
-        if (!n || typeof n !== 'object') return;
-        var title = typeof n.title === 'string' ? n.title : 'Untitled';
-        if (Array.isArray(n.children) && n.children.length) {
-          rec(n.children, trail.concat([title]));
-          return;
-        }
-        var lf = n.leaf;
-        if (!lf || lf.kind !== 'budget') return;
-        var rec_ = lf.recurrence || {};
-        out.push(P.model.normalizeHabit({
-          id: n.id,
-          title: trail.length ? trail.join(' · ') + ' · ' + title : title,
-          notes: typeof n.notes === 'string' ? n.notes : '',
-          daysOfWeek: rec_.daysOfWeek,
-          startTime: rec_.startTime,
-          durationMin: lf.durationMin,
-          completedDates: lf.completedOccurrences
-        }));
-      });
+  // Normalise one tree node from a v3 file — and absorb v1 nodes in the same
+  // pass, since both are `{ title, children, ... }` trees: a v1 leaf has `leaf`
+  // (kind task/budget) where a v3 leaf has `habit`.
+  function normalizeNode(n) {
+    if (!n || typeof n !== 'object') return null;
+    var node = {
+      id: n.id || P.util.uid('n'),
+      title: typeof n.title === 'string' ? n.title : 'Untitled',
+      notes: typeof n.notes === 'string' ? n.notes : '',
+      collapsed: !!n.collapsed,
+      children: Array.isArray(n.children) ? n.children.map(normalizeNode).filter(Boolean) : [],
+      habit: null
+    };
+    if (node.children.length === 0) {
+      node.habit = P.model.normalizeHabitData(n.habit !== undefined ? n.habit : habitFromV1Leaf(n.leaf));
     }
-    rec(forest, []);
-    return out.filter(Boolean);
+    return node;
+  }
+
+  // v1 leaf payload → habit payload (or null → defaults via normalizeHabitData).
+  function habitFromV1Leaf(lf) {
+    if (!lf || typeof lf !== 'object') return null;
+    if (lf.kind === 'budget') {
+      var r = lf.recurrence || {};
+      return {
+        daysOfWeek: r.daysOfWeek,
+        startTime: r.startTime,
+        durationMin: lf.durationMin,
+        completedDates: lf.completedOccurrences
+      };
+    }
+    // One-off task: keep the goal + its length; it recurs every day now.
+    return { daysOfWeek: null, startTime: null, durationMin: lf.durationMin, completedDates: null };
+  }
+
+  // v2 → v3: rebuild the tree from flat habits. The v1→v2 migration flattened
+  // nested goals into "Parent · Child" titles, so split on that separator and
+  // re-group; habits without it stay top-level leaves.
+  function unflattenHabits(habits) {
+    var SEP = ' · ';
+    var roots = [];
+    function childByTitle(list, title) {
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].title === title && list[i].children.length) return list[i];
+      }
+      return null;
+    }
+    habits.forEach(function (h) {
+      if (!h || typeof h !== 'object') return;
+      var segs = String(h.title || 'Untitled').split(SEP);
+      var leafTitle = segs.pop();
+      var leaf = {
+        id: h.id || P.util.uid('n'),
+        title: leafTitle,
+        notes: typeof h.notes === 'string' ? h.notes : '',
+        collapsed: false,
+        children: [],
+        habit: P.model.normalizeHabitData(h)
+      };
+      var list = roots;
+      segs.forEach(function (seg) {
+        var parent = childByTitle(list, seg);
+        if (!parent) {
+          parent = { id: P.util.uid('n'), title: seg, notes: '', collapsed: false, children: [], habit: null };
+          // A leaf already at this level with the same title stays a separate
+          // node — we only merge into grouping (parent) nodes we created.
+          list.push(parent);
+        }
+        list = parent.children;
+      });
+      list.push(leaf);
+    });
+    return roots;
   }
 
   function normalizeNoteItem(n) {
@@ -203,11 +251,11 @@
   }
 
   // Call after mutating state. Options:
-  //   silent      — persist but don't re-render (note typing, so the list never
+  //   silent      — persist but don't re-render (note typing, so the tree never
   //                 rebuilds under the cursor). A whole burst of silent edits is
   //                 coalesced into ONE undo step (the pre-burst state).
-  //   noHistory   — a view-only change (area/selection) that should re-render
-  //                 and persist but never appear on the undo timeline.
+  //   noHistory   — a view-only change (area/collapse/selection) that should
+  //                 re-render and persist but never appear on the undo timeline.
   //   provisional — render + persist but stay completely invisible to history
   //                 and leave the baseline untouched (throwaway placeholders).
   function commit(opts) {
